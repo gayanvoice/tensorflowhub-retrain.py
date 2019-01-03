@@ -15,105 +15,6 @@
 # NOTICE: This work was derived from tensorflow/examples/image_retraining
 # and modified to use TensorFlow Hub modules.
 
-# pylint: disable=line-too-long
-r"""Simple transfer learning with image modules from TensorFlow Hub.
-
-This example shows how to train an image classifier based on any
-TensorFlow Hub module that computes image feature vectors. By default,
-it uses the feature vectors computed by Inception V3 trained on ImageNet.
-See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
-for more options.
-
-The top layer receives as input a 2048-dimensional vector (assuming
-Inception V3) for each image. We train a softmax layer on top of this
-representation. If the softmax layer contains N labels, this corresponds
-to learning N + 2048*N model parameters for the biases and weights.
-
-Here's an example, which assumes you have a folder containing class-named
-subfolders, each full of images for each label. The example folder flower_photos
-should have a structure like this:
-
-~/flower_photos/daisy/photo1.jpg
-~/flower_photos/daisy/photo2.jpg
-...
-~/flower_photos/rose/anotherphoto77.jpg
-...
-~/flower_photos/sunflower/somepicture.jpg
-
-The subfolder names are important, since they define what label is applied to
-each image, but the filenames themselves don't matter. (For a working example,
-download http://download.tensorflow.org/example_images/flower_photos.tgz
-and run  tar xzf flower_photos.tgz  to unpack it.)
-
-Once your images are prepared, and you have pip-installed tensorflow-hub and
-a sufficiently recent version of tensorflow, you can run the training with a
-command like this:
-
-```bash
-python retrain.py --image_dir ~/flower_photos
-```
-
-You can replace the image_dir argument with any folder containing subfolders of
-images. The label for each image is taken from the name of the subfolder it's
-in.
-
-This produces a new model file that can be loaded and run by any TensorFlow
-program, for example the tensorflow/examples/label_image sample code.
-
-By default this script will use the highly accurate, but comparatively large and
-slow Inception V3 model architecture. It's recommended that you start with this
-to validate that you have gathered good training data, but if you want to deploy
-on resource-limited platforms, you can try the `--tfhub_module` flag with a
-Mobilenet model. For more information on Mobilenet, see
-https://research.googleblog.com/2017/06/mobilenets-open-source-models-for.html
-
-For example:
-
-Run floating-point version of Mobilenet:
-
-```bash
-python retrain.py --image_dir ~/flower_photos \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/feature_vector/1
-```
-
-Run Mobilenet, instrumented for quantization:
-
-```bash
-python retrain.py --image_dir ~/flower_photos/ \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/quantops/feature_vector/1
-```
-
-These instrumented models can be converted to fully quantized mobile models via
-TensorFlow Lite.
-
-There are different Mobilenet models to choose from, with a variety of file
-size and latency options.
-  - The first number can be '100', '075', '050', or '025' to control the number
-    of neurons (activations of hidden layers); the number of weights (and hence
-    to some extent the file size and speed) shrinks with the square of that
-    fraction.
-  - The second number is the input image size. You can choose '224', '192',
-    '160', or '128', with smaller sizes giving faster speeds.
-
-To use with TensorBoard:
-
-By default, this script will log summaries to /tmp/retrain_logs directory
-
-Visualize the summaries with this command:
-
-tensorboard --logdir /tmp/retrain_logs
-
-To use with Tensorflow Serving, run this tool with --saved_model_dir set
-to some increasingly numbered export location under the model base path, e.g.:
-
-```bash
-python retrain.py (... other args as before ...) \
-    --saved_model_dir=/tmp/saved_models/$(date +%s)/
-tensorflow_model_server --port=9000 --model_name=my_image_classifier \
-    --model_base_path=/tmp/saved_models/
-```
-"""
-# pylint: enable=line-too-long
 
 from __future__ import absolute_import
 from __future__ import division
@@ -132,22 +33,177 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
 
-FLAGS = None
-
-
-
-
-
 MAX_NUM_IMAGES_PER_CLASS = 2 ** 27 - 1  # ~134M
-
-# The location where variable checkpoints will be stored.
 CHECKPOINT_NAME = '/tmp/_retrain_checkpoint'
-
-# A module is understood as instrumented for quantization with TF-Lite
-# if it contains any of these ops.
 FAKE_QUANT_OPS = ('FakeQuantWithMinMaxVars',
                   'FakeQuantWithMinMaxVarsPerChannel')
 
+def main():
+    image_dir = os.getcwd() + '\\training_images\\'  # str     path to folders of labeled images
+    output_graph = os.getcwd() + '\\retrained_graph.pb'  # str     where to save the trained graph
+    intermediate_output_graphs_dir = os.getcwd() + '\\_intermediate_graph\\'  # str     where to save the intermediate graphs
+    intermediate_store_frequency = 0  # int     How many steps to store intermediate graph. If "0" then will not store
+    output_labels = os.getcwd() + '\\output_labels.txt'  # str     where to save the trained graph's labels
+    summaries_dir = os.getcwd() + '\\_summaries_dir'  # str     where to save summary logs for TensorBoard
+    how_many_training_steps = 100  # int     default 4000 how many training steps to run before ending
+    learning_rate = 0.01  # float   how large a learning rate to use when training
+    testing_percentage = 10  # int     what percentage of images to use as a test set
+    validation_percentage = 10  # int     what percentage of images to use as a validation set
+    eval_step_interval = 10  # int     how often to evaluate the training results
+    train_batch_size = 100  # int     how many images to train on at a time
+    test_batch_size = -1  # int     how many images to test on value of -1 causes the entire test set to be used
+    validation_batch_size = 100  # int     how many images to test on evaluation step value of -1 causes the entire test set to be used
+
+    print_misclassified_test_images = False  # bool    whether to print out a list of all misclassified test images
+    bottleneck_dir = os.getcwd() + '\\_bottleneck'  # str     path to cache bottleneck layer values as files
+    final_tensor_name = 'final_result'  # str     the name of the output classification layer in the retrained graph
+
+    flip_left_right = False  # bool    whether to randomly flip half of the training images horizontally
+    random_crop = 0  # int     A percentage determining how much of a margin to randomly crop off the training images
+    random_scale = 0  # int     A percentage determining how much to randomly scale up the size of the training images
+    random_brightness = 0  # int     A percentage determining how much to randomly multiply the training image input pixels up or down
+
+    # tf_hub_module str which TensorFlow Hub module to use
+    tf_hub_module = 'https://tfhub.dev/google/imagenet/inception_v3/feature_vector/1'
+    saved_model_dir = ''  # str     Where to save the exported graph
+
+    print('main()')
+    tf.logging.set_verbosity(tf.logging.INFO)
+
+    if not image_dir:
+        tf.logging.error('No image_dir location.')
+        return -1
+    prepare_file_system(summaries_dir, intermediate_store_frequency)
+    image_lists = create_image_lists(image_dir, testing_percentage,
+                                     validation_percentage)
+    class_count = len(image_lists.keys())
+    print('image_lists {}'.format(image_lists))
+
+    if class_count == 0:
+        tf.logging.error('No valid folders of images found at ' + image_dir)
+        return -1
+    if class_count == 1:
+        tf.logging.error('Only one valid folder of images found at ' +
+                         image_dir +
+                         ' - multiple classes are needed for classification.')
+        return -1
+
+    do_distort_images = should_distort_images(
+        flip_left_right,
+        random_crop,
+        random_scale,
+        random_brightness
+    )
+
+    module_spec = hub.load_module_spec(tf_hub_module)
+    graph, bottleneck_tensor, re_sized_image_tensor, wants_quantization = (
+        create_module_graph(module_spec)
+    )
+
+    with graph.as_default():
+        (train_step, cross_entropy, bottleneck_input, ground_truth_input, final_tensor) = add_final_retrain_ops(
+            class_count, final_tensor_name, bottleneck_tensor, wants_quantization, learning_rate, is_training=True)
+
+    with tf.Session(graph=graph) as sess:
+        init = tf.global_variables_initializer()
+        sess.run(init)
+        jpeg_data_tensor, decoded_image_tensor = add_jpeg_decoding(module_spec)
+
+        if do_distort_images:
+            (distorted_jpeg_data_tensor, distorted_image_tensor) = add_input_distortions(
+                flip_left_right, random_crop, random_scale,
+                random_brightness, module_spec)
+        else:
+            cache_bottlenecks(sess, image_lists, image_dir,
+                              bottleneck_dir, jpeg_data_tensor,
+                              decoded_image_tensor, re_sized_image_tensor,
+                              bottleneck_tensor, tf_hub_module)
+
+        evaluation_step, _ = add_evaluation_step(final_tensor, ground_truth_input)
+
+        merged = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(summaries_dir + '/train', sess.graph)
+
+        validation_writer = tf.summary.FileWriter(summaries_dir + '/validation')
+
+        train_saver = tf.train.Saver()
+
+        for i in range(how_many_training_steps):
+            if do_distort_images:
+                (train_bottlenecks,
+                 train_ground_truth) = get_random_distorted_bottlenecks(
+                    sess, image_lists, train_batch_size, 'training',
+                    image_dir, distorted_jpeg_data_tensor,
+                    distorted_image_tensor, re_sized_image_tensor, bottleneck_tensor)
+            else:
+                (train_bottlenecks,
+                 train_ground_truth, _) = get_random_cached_bottlenecks(
+                    sess, image_lists, train_batch_size, 'training',
+                    bottleneck_dir, image_dir, jpeg_data_tensor,
+                    decoded_image_tensor, re_sized_image_tensor, bottleneck_tensor,
+                    tf_hub_module)
+            # Feed the bottlenecks and ground truth into the graph, and run a training
+
+            train_summary, _ = sess.run(
+                [merged, train_step],
+                feed_dict={bottleneck_input: train_bottlenecks,
+                           ground_truth_input: train_ground_truth})
+            train_writer.add_summary(train_summary, i)
+
+            is_last_step = (i + 1 == how_many_training_steps)
+            if (i % eval_step_interval) == 0 or is_last_step:
+                train_accuracy, cross_entropy_value = sess.run(
+                    [evaluation_step, cross_entropy],
+                    feed_dict={bottleneck_input: train_bottlenecks,
+                               ground_truth_input: train_ground_truth})
+                tf.logging.info('%s: Step %d: Train accuracy = %.1f%%' %
+                                (datetime.now(), i, train_accuracy * 100))
+                tf.logging.info('%s: Step %d: Cross entropy = %f' %
+                                (datetime.now(), i, cross_entropy_value))
+                validation_bottlenecks, validation_ground_truth, _ = (
+                    get_random_cached_bottlenecks(
+                        sess, image_lists, validation_batch_size, 'validation',
+                        bottleneck_dir, image_dir, jpeg_data_tensor,
+                        decoded_image_tensor, re_sized_image_tensor, bottleneck_tensor,
+                        tf_hub_module))
+                validation_summary, validation_accuracy = sess.run(
+                    [merged, evaluation_step],
+                    feed_dict={bottleneck_input: validation_bottlenecks,
+                               ground_truth_input: validation_ground_truth})
+                validation_writer.add_summary(validation_summary, i)
+                tf.logging.info('%s: Step %d: Validation accuracy = %.1f%% (N=%d)' %
+                                (datetime.now(), i, validation_accuracy * 100,
+                                 len(validation_bottlenecks)))
+
+            intermediate_frequency = intermediate_store_frequency
+
+            if (intermediate_frequency > 0 and (i % intermediate_frequency == 0)
+                    and i > 0):
+                train_saver.save(sess, CHECKPOINT_NAME)
+                intermediate_file_name = (intermediate_output_graphs_dir +
+                                          'intermediate_' + str(i) + '.pb')
+                tf.logging.info('Save intermediate result to : ' +
+                                intermediate_file_name)
+                save_graph_to_file(intermediate_file_name, module_spec,
+                                   class_count, final_tensor_name)
+
+        train_saver.save(sess, CHECKPOINT_NAME)
+        run_final_eval(sess, module_spec, class_count, image_lists,
+                       jpeg_data_tensor, decoded_image_tensor,
+                       re_sized_image_tensor, bottleneck_tensor,
+                       test_batch_size, bottleneck_dir, image_dir,
+                       tf_hub_module, final_tensor_name, learning_rate,
+                       print_misclassified_test_images)
+
+        tf.logging.info('Save final result to : ' + output_graph)
+        if wants_quantization:
+            tf.logging.info('The model is instrumented for quantization with TF-Lite')
+        save_graph_to_file(output_graph, module_spec, class_count, final_tensor_name, learning_rate)
+        with tf.gfile.GFile(output_labels, 'w') as f:
+            f.write('\n'.join(image_lists.keys()) + '\n')
+
+        if saved_model_dir:
+            export_model(module_spec, class_count, saved_model_dir)
 
 def create_image_lists(image_dir, testing_percentage, validation_percentage):
     print('create_image_lists({}, {}, {})'.format(image_dir, testing_percentage, validation_percentage))
@@ -664,7 +720,6 @@ def add_jpeg_decoding(module_spec):
 
     return jpeg_data, resized_image
 
-
 def export_model(module_spec, class_count, saved_model_dir):
     sess, in_image, _, _, _, _ = build_eval_session(module_spec, class_count)
     with sess.graph.as_default() as graph:
@@ -675,189 +730,6 @@ def export_model(module_spec, class_count, saved_model_dir):
             outputs={'prediction': graph.get_tensor_by_name('final_result:0')},
             legacy_init_op=tf.group(tf.tables_initializer(), name='legacy_init_op')
         )
-
-
-def main():
-    image_dir = os.getcwd() + '\\training_imageS\\'  # str     path to folders of labeled images
-    output_graph = os.getcwd() + '\\retrained_graph.pb'  # str     where to save the trained graph
-    intermediate_output_graphs_dir = os.getcwd() + '\\tmp\\intermediate_graph\\'  # str     where to save the intermediate graphs
-    intermediate_store_frequency = 0  # int     How many steps to store intermediate graph. If "0" then will not store
-    output_labels = os.getcwd() + '\\tmp\\output_labels.txt'  # str     where to save the trained graph's labels
-    summaries_dir = os.getcwd() + '\\summaries_dir'  # str     where to save summary logs for TensorBoard
-    how_many_training_steps = 100  # int     default 4000 how many training steps to run before ending
-    learning_rate = 0.01  # float   how large a learning rate to use when training
-    testing_percentage = 10  # int     what percentage of images to use as a test set
-    validation_percentage = 10  # int     what percentage of images to use as a validation set
-    eval_step_interval = 10  # int     how often to evaluate the training results
-    train_batch_size = 100  # int     how many images to train on at a time
-    test_batch_size = -1  # int     how many images to test on value of -1 causes the entire test set to be used
-    validation_batch_size = 100  # int     how many images to test on evaluation step value of -1 causes the entire test set to be used
-
-    print_misclassified_test_images = False  # bool    whether to print out a list of all misclassified test images
-    bottleneck_dir = os.getcwd() + '\\tmp\\bottleneck'  # str     path to cache bottleneck layer values as files
-    final_tensor_name = 'final_result'  # str     the name of the output classification layer in the retrained graph
-
-    flip_left_right = False  # bool    whether to randomly flip half of the training images horizontally
-    random_crop = 0  # int     A percentage determining how much of a margin to randomly crop off the training images
-    random_scale = 0  # int     A percentage determining how much to randomly scale up the size of the training images
-    random_brightness = 0  # int     A percentage determining how much to randomly multiply the training image input pixels up or down
-
-    # tf_hub_module str which TensorFlow Hub module to use
-    tf_hub_module = 'https://tfhub.dev/google/imagenet/inception_v3/feature_vector/1'
-    saved_model_dir = ''  # str     Where to save the exported graph
-
-    print('main()')
-    tf.logging.set_verbosity(tf.logging.INFO)
-
-    if not image_dir:
-        tf.logging.error('Must set --image_dir.')
-        return -1
-
-    # Prepare necessary directories that can be used during training
-    prepare_file_system(summaries_dir, intermediate_store_frequency)
-
-
-
-    # Look at the folder structure, and create lists of all the images.
-    image_lists = create_image_lists(image_dir, testing_percentage,
-                                   validation_percentage)
-    class_count = len(image_lists.keys())
-    print('image_lists {}'. format(image_lists))
-
-    if class_count == 0:
-        tf.logging.error('No valid folders of images found at ' + image_dir)
-        return -1
-    if class_count == 1:
-        tf.logging.error('Only one valid folder of images found at ' +
-                     image_dir +
-                     ' - multiple classes are needed for classification.')
-        return -1
-    
-
-    # See if the command-line flags mean we're applying any distortions.
-    do_distort_images = should_distort_images(
-        flip_left_right,
-        random_crop,
-        random_scale,
-        random_brightness
-    )
-
-
-    # Set up the pre-trained graph.
-    module_spec = hub.load_module_spec(tf_hub_module)
-    graph, bottleneck_tensor, re_sized_image_tensor, wants_quantization = (
-        create_module_graph(module_spec)
-    )
-
-
-
-    with graph.as_default():
-        (train_step, cross_entropy, bottleneck_input,ground_truth_input, final_tensor) = add_final_retrain_ops(
-         class_count, final_tensor_name, bottleneck_tensor, wants_quantization, learning_rate, is_training=True)
-
-    with tf.Session( graph = graph ) as sess:
-        init = tf.global_variables_initializer()
-        sess.run(init)
-        jpeg_data_tensor, decoded_image_tensor = add_jpeg_decoding(module_spec)
-
-        if do_distort_images:
-            (distorted_jpeg_data_tensor, distorted_image_tensor) = add_input_distortions(
-                flip_left_right, random_crop, random_scale,
-                random_brightness, module_spec)
-        else:
-            cache_bottlenecks(sess, image_lists, image_dir,
-                              bottleneck_dir, jpeg_data_tensor,
-                              decoded_image_tensor, re_sized_image_tensor,
-                              bottleneck_tensor, tf_hub_module)
-
-
-        evaluation_step, _ = add_evaluation_step(final_tensor, ground_truth_input)
-
-        merged = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(summaries_dir + '/train', sess.graph)
-
-        validation_writer = tf.summary.FileWriter(summaries_dir + '/validation')
-
-        train_saver = tf.train.Saver()
-
-        for i in range(how_many_training_steps):
-            if do_distort_images:
-                (train_bottlenecks,
-                 train_ground_truth) = get_random_distorted_bottlenecks(
-                    sess, image_lists, train_batch_size, 'training',
-                    image_dir, distorted_jpeg_data_tensor,
-                    distorted_image_tensor, re_sized_image_tensor, bottleneck_tensor)
-            else:
-                (train_bottlenecks,
-                 train_ground_truth, _) = get_random_cached_bottlenecks(
-                    sess, image_lists, train_batch_size, 'training',
-                    bottleneck_dir, image_dir, jpeg_data_tensor,
-                    decoded_image_tensor, re_sized_image_tensor, bottleneck_tensor,
-                    tf_hub_module)
-            # Feed the bottlenecks and ground truth into the graph, and run a training
-
-            train_summary, _ = sess.run(
-                [merged, train_step],
-                feed_dict={bottleneck_input: train_bottlenecks,
-                           ground_truth_input: train_ground_truth})
-            train_writer.add_summary(train_summary, i)
-
-            is_last_step = (i + 1 == how_many_training_steps)
-            if (i % eval_step_interval) == 0 or is_last_step:
-                train_accuracy, cross_entropy_value = sess.run(
-                    [evaluation_step, cross_entropy],
-                    feed_dict={bottleneck_input: train_bottlenecks,
-                               ground_truth_input: train_ground_truth})
-                tf.logging.info('%s: Step %d: Train accuracy = %.1f%%' %
-                                (datetime.now(), i, train_accuracy * 100))
-                tf.logging.info('%s: Step %d: Cross entropy = %f' %
-                                (datetime.now(), i, cross_entropy_value))
-                validation_bottlenecks, validation_ground_truth, _ = (
-                    get_random_cached_bottlenecks(
-                        sess, image_lists, validation_batch_size, 'validation',
-                        bottleneck_dir, image_dir, jpeg_data_tensor,
-                        decoded_image_tensor, re_sized_image_tensor, bottleneck_tensor,
-                        tf_hub_module))
-                validation_summary, validation_accuracy = sess.run(
-                    [merged, evaluation_step],
-                    feed_dict={bottleneck_input: validation_bottlenecks,
-                               ground_truth_input: validation_ground_truth})
-                validation_writer.add_summary(validation_summary, i)
-                tf.logging.info('%s: Step %d: Validation accuracy = %.1f%% (N=%d)' %
-                                (datetime.now(), i, validation_accuracy * 100,
-                                 len(validation_bottlenecks)))
-
-
-            intermediate_frequency = intermediate_store_frequency
-
-            if (intermediate_frequency > 0 and (i % intermediate_frequency == 0)
-                    and i > 0):
-                train_saver.save(sess, CHECKPOINT_NAME)
-                intermediate_file_name = (intermediate_output_graphs_dir +
-                                          'intermediate_' + str(i) + '.pb')
-                tf.logging.info('Save intermediate result to : ' +
-                                intermediate_file_name)
-                save_graph_to_file(intermediate_file_name, module_spec,
-                                   class_count, final_tensor_name)
-
-        train_saver.save(sess, CHECKPOINT_NAME)
-        run_final_eval(sess, module_spec, class_count, image_lists,
-                       jpeg_data_tensor, decoded_image_tensor,
-                       re_sized_image_tensor, bottleneck_tensor,
-                       test_batch_size, bottleneck_dir, image_dir,
-                       tf_hub_module, final_tensor_name, learning_rate,
-                       print_misclassified_test_images)
-
-
-        tf.logging.info('Save final result to : ' + output_graph)
-        if wants_quantization:
-            tf.logging.info('The model is instrumented for quantization with TF-Lite')
-        save_graph_to_file(output_graph, module_spec, class_count, final_tensor_name, learning_rate)
-        with tf.gfile.GFile(output_labels, 'w') as f:
-            f.write('\n'.join(image_lists.keys()) + '\n')
-
-        if saved_model_dir:
-            export_model(module_spec, class_count, saved_model_dir)
 
 if __name__ == '__main__':
     main()
