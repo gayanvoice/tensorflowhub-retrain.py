@@ -65,7 +65,7 @@ def load_labels(label_file):
     return label
 
 def main():
-    file_name = os.getcwd() + "\\test\\gayan1.jpg"  # image to be processed
+    file_name = os.getcwd() + "\\test\\sunflower.jpg"  # image to be processed
     model_file = os.getcwd() + "\\_graph.pb"  # graph/model to be executed
     label_file = os.getcwd() + "\\_labels.txt"  # name of file containing labels
     input_height = 299  # input height"
