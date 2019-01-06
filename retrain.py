@@ -40,10 +40,10 @@ FAKE_QUANT_OPS = ('FakeQuantWithMinMaxVars',
 
 def main():
     image_dir = os.getcwd() + '\\training_images\\'  # str     path to folders of labeled images
-    output_graph = os.getcwd() + '\\retrained_graph.pb'  # str     where to save the trained graph
+    output_graph = os.getcwd() + '\\_graph.pb'  # str     where to save the trained graph
     intermediate_output_graphs_dir = os.getcwd() + '\\_intermediate_graph\\'  # str     where to save the intermediate graphs
     intermediate_store_frequency = 0  # int     How many steps to store intermediate graph. If "0" then will not store
-    output_labels = os.getcwd() + '\\output_labels.txt'  # str     where to save the trained graph's labels
+    output_labels = os.getcwd() + '\\_labels.txt'  # str     where to save the trained graph's labels
     summaries_dir = os.getcwd() + '\\_summaries_dir'  # str     where to save summary logs for TensorBoard
     how_many_training_steps = 100  # int     default 4000 how many training steps to run before ending
     learning_rate = 0.01  # float   how large a learning rate to use when training
